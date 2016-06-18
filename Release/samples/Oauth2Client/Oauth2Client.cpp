@@ -88,165 +88,93 @@ static void open_browser(utility::string_t auth_uri)
 #endif
 }
 
-//
-// A simple listener class to capture OAuth 2.0 HTTP redirect to localhost.
-// The listener captures redirected URI and obtains the token.
-// This type of listener can be implemented in the back-end to capture and store tokens.
-//
-class oauth2_code_listener
+class oauth2_authorization_client
 {
 public:
-    oauth2_code_listener(
-        uri listen_uri,
-        oauth2_config& config) :
-            m_listener(new http_listener(listen_uri)),
-            m_config(config)
+    oauth2_authorization_client(const oauth2_client& client)
+        : m_client(client)
+    {}
+
+    oauth2_client m_client;
+
+    void authorization_code_flow()
     {
-        m_listener->support([this](http::http_request request) -> void
+        if (m_client.token().is_valid_access_token())
+            return;
+
+        auto state_cookie = nonce_generator::shared_generate();
+
+        pplx::task_completion_event<void> m_tce;
+
+        http_listener m_listener(m_client.redirect_uri());
+        m_listener.support([this, m_tce, &state_cookie](http::http_request request) -> void
         {
             if (request.request_uri().path() == U("/") && request.request_uri().query() != U(""))
             {
-                m_resplock.lock();
-
-                m_config.token_from_redirected_uri(request.request_uri()).then([this,request](pplx::task<void> token_task) -> void
+                m_client.set_token_async_from_redirected_uri(request.request_uri(), state_cookie)
+                    .then([m_tce](pplx::task<void> token_task) -> void
                 {
                     try
                     {
                         token_task.wait();
-                        m_tce.set(true);
+                        m_tce.set();
                     }
-                    catch (const oauth2_exception& e)
+                    catch (...)
                     {
-                        ucout << "Error: " << e.what() << std::endl;
-                        m_tce.set(false);
+                        m_tce.set_exception(std::current_exception());
                     }
                 });
 
                 request.reply(status_codes::OK, U("Ok."));
-
-                m_resplock.unlock();
             }
             else
             {
+                m_tce.set_exception(std::runtime_error("Bad http request received"));
                 request.reply(status_codes::NotFound, U("Not found."));
             }
         });
+        m_listener.open().wait();
 
-        m_listener->open().wait();
-    }
+        auto auth_uri = m_client.build_authorization_uri(state_cookie);
 
-    ~oauth2_code_listener()
-    {
-        m_listener->close().wait();
-    }
-
-    pplx::task<bool> listen_for_code()
-    {
-        return pplx::create_task(m_tce);
-    }
-
-private:
-    std::unique_ptr<http_listener> m_listener;
-    pplx::task_completion_event<bool> m_tce;
-    oauth2_config& m_config;
-    std::mutex m_resplock;
-};
-
-//
-// Base class for OAuth 2.0 sessions of this sample.
-//
-class oauth2_session_sample
-{
-public:
-    oauth2_session_sample(utility::string_t name,
-        utility::string_t client_key,
-        utility::string_t client_secret,
-        utility::string_t auth_endpoint,
-        utility::string_t token_endpoint,
-        utility::string_t redirect_uri) :
-            m_oauth2_config(client_key,
-                client_secret,
-                auth_endpoint,
-                token_endpoint,
-                redirect_uri),
-            m_name(name),
-            m_listener(new oauth2_code_listener(redirect_uri, m_oauth2_config))
-    {}
-
-    void run()
-    {
-        if (is_enabled())
-        {
-            ucout << "Running " << m_name.c_str() << " session..." << std::endl;
-
-            if (!m_oauth2_config.token().is_valid_access_token())
-            {
-                if (!authorization_code_flow().get())
-                {
-                    ucout << "Authorization failed for " << m_name.c_str() << "." << std::endl;
-                    return;
-                }
-            }
-
-            run_internal();
-        }
-        else
-        {
-            ucout << "Skipped " << m_name.c_str() << " session sample because app key or secret is empty. Please see instructions." << std::endl;
-        }
-    }
-
-protected:
-    virtual void run_internal() = 0;
-
-    pplx::task<bool> authorization_code_flow()
-    {
-        open_browser_auth();
-        return m_listener->listen_for_code();
-    }
-
-    http_client_config m_http_config;
-    oauth2_config m_oauth2_config;
-
-private:
-    bool is_enabled() const
-    {
-        return !m_oauth2_config.client_key().empty() && !m_oauth2_config.client_secret().empty();
-    }
-
-    void open_browser_auth()
-    {
-        auto auth_uri(m_oauth2_config.build_authorization_uri(true));
         ucout << "Opening browser in URI:" << std::endl;
-        ucout << auth_uri << std::endl;
-        open_browser(auth_uri);
-    }
+        ucout << auth_uri.to_string() << std::endl;
 
-    utility::string_t m_name;
-    std::unique_ptr<oauth2_code_listener> m_listener;
+        open_browser(auth_uri.to_string());
+
+        pplx::create_task(m_tce).wait();
+        m_listener.close().wait();
+    }
 };
 
 //
 // Specialized class for Dropbox OAuth 2.0 session.
 //
-class dropbox_session_sample : public oauth2_session_sample
+class dropbox_session_sample
 {
 public:
     dropbox_session_sample() :
         oauth2_session_sample(U("Dropbox"),
-            s_dropbox_key,
-            s_dropbox_secret,
-            U("https://www.dropbox.com/1/oauth2/authorize"),
-            U("https://api.dropbox.com/1/oauth2/token"),
-            U("http://localhost:8889/"))
+            oauth2_config(s_dropbox_key,
+                s_dropbox_secret,
+                U("https://www.dropbox.com/1/oauth2/authorize"),
+                U("https://api.dropbox.com/1/oauth2/token"),
+                U("http://localhost:8889/")))
     {
         // Dropbox uses "default" OAuth 2.0 settings.
+    }
+
+    void run()
+    {
+
     }
 
 protected:
     void run_internal() override
     {
-        http_client api(U("https://api.dropbox.com/1/"), m_http_config);
+        http_client api(U("https://api.dropbox.com/1/"));
+        api.add_handler(m_client.create_pipeline_stage());
+
         ucout << "Requesting account information:" << std::endl;
         ucout << "Information: " << api.request(methods::GET, U("account/info")).get().extract_json().get() << std::endl;
     }
@@ -255,16 +183,21 @@ protected:
 //
 // Specialized class for LinkedIn OAuth 2.0 session.
 //
-class linkedin_session_sample : public oauth2_session_sample
+class linkedin_session_sample
 {
 public:
-    linkedin_session_sample() :
-        oauth2_session_sample(U("LinkedIn"),
+    static linkedin_session_sample construct()
+    {
+        oauth2_config linkedin_config(
             s_linkedin_key,
             s_linkedin_secret,
             U("https://www.linkedin.com/uas/oauth2/authorization"),
             U("https://www.linkedin.com/uas/oauth2/accessToken"),
-            U("http://localhost:8888/"))
+            U("http://localhost:8888/");
+
+    }
+    linkedin_session_sample() :
+        oauth2_session_sample(U("LinkedIn"))
     {
         // LinkedIn doesn't use bearer auth.
         m_oauth2_config.set_bearer_auth(false);

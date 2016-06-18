@@ -167,7 +167,129 @@ private:
     int64_t m_expires_in;
 };
 
-namespace details { class oauth2_pipeline_stage; }
+enum class auth_scheme_t
+{
+    http_basic,
+    request_body
+};
+
+class oauth2_client_config
+{
+public:
+    oauth2_client_config(
+        web::uri_builder auth_uri, web::http::client::http_client token_client,
+        utility::string_t redirect_uri, utility::string_t scope = utility::string_t())
+    :
+        m_auth_uri(std::move(auth_uri)),
+        m_token_client(token_client._get_internal_pipeline()),
+        m_redirect_uri(std::move(redirect_uri)),
+        m_scope(std::move(scope)),
+        m_bearer_auth(true),
+        m_auth_scheme(auth_scheme_t::http_basic),
+        m_access_token_key(web::http::oauth2::details::oauth2_strings::access_token)
+    {}
+
+    /// <summary>
+    /// Get the authorization endpoint URI
+    /// </summary>
+    const uri_builder& auth_uri_builder() const { return m_auth_uri; }
+
+    /// <summary>
+    /// Set authorization endpoint URI.
+    /// </summary>
+    void set_auth_uri_builder(const uri_builder& auth_endpoint) { m_auth_uri = auth_endpoint; }
+
+    /// <summary>
+    /// Set the `http_client` used to retrieve new tokens.
+    /// To use a proxy when retrieving tokens, configure the `http_client` before assigning it here.
+    /// </summary>
+    void set_token_client(web::http::client::http_client token_client) { m_token_client = token_client._get_internal_pipeline(); }
+
+    /// <summary>
+    /// Internal function to retrieve the `http_client`.
+    /// </summary>
+    web::http::client::http_client _token_client() const { return web::http::client::http_client(m_token_client); }
+
+    /// <summary>
+    /// Get redirect URI string.
+    /// </summary>
+    /// <returns>Redirect URI string.</returns>
+    const utility::string_t& redirect_uri() const { return m_redirect_uri; }
+
+    /// <summary>
+    /// Set redirect URI string.
+    /// </summary>
+    /// <param name="redirect_uri">Redirect URI string to set.</param>
+    void set_redirect_uri(utility::string_t redirect_uri) { m_redirect_uri = std::move(redirect_uri); }
+
+    /// <summary>
+    /// Get scope used in authorization for token.
+    /// </summary>
+    /// <returns>Scope string used in authorization.</returns>
+    const utility::string_t& scope() const { return m_scope; }
+    /// <summary>
+    /// Set scope for authorization for token.
+    /// </summary>
+    /// <param name="scope">Scope string for authorization for token.</param>
+    void set_scope(utility::string_t scope) { m_scope = std::move(scope); }
+
+    /// <summary>
+    /// Get bearer token authentication setting.
+    /// </summary>
+    /// <returns>Bearer token authentication setting.</returns>
+    bool bearer_auth() const { return m_bearer_auth; }
+
+    /// <summary>
+    /// Set bearer token authentication setting.
+    /// This must be selected based on what the service accepts.
+    /// True means access token is passed in the request header. (http://tools.ietf.org/html/rfc6750#section-2.1)
+    /// False means access token in passed in the query parameters. (http://tools.ietf.org/html/rfc6750#section-2.3)
+    /// Default: True.
+    /// </summary>
+    /// <param name="bearer_auth">The bearer token authentication setting to set.</param>
+    void set_bearer_auth(bool bearer_auth) { m_bearer_auth = bearer_auth; }
+
+    /// <summary>
+    /// Get the configured authentication scheme
+    /// </summary>
+    auth_scheme_t auth_scheme() const { return m_auth_scheme; }
+
+    /// <summary>
+    /// Set authentication scheme used for the token server
+    /// </summary>
+    /// <remarks>
+    /// This setting must be selected based on what the service accepts.
+    /// Default: HTTP Basic Authentication
+    /// </remarks>
+    void set_auth_scheme(auth_scheme_t scheme) { m_auth_scheme = scheme; }
+
+    /// <summary>
+    /// Get access token key.
+    /// </summary>
+    /// <returns>Access token key string.</returns>
+    const utility::string_t&  access_token_key() const { return m_access_token_key; }
+
+    /// <summary>
+    /// Set access token key.
+    /// If the service requires a "non-standard" key you must set it here.
+    /// Default: "access_token".
+    /// </summary>
+    void set_access_token_key(utility::string_t access_token_key) { m_access_token_key = std::move(access_token_key); }
+
+private:
+    uri_builder m_auth_uri;
+    std::shared_ptr<::web::http::client::http_pipeline> m_token_client;
+    utility::string_t m_redirect_uri;
+    utility::string_t m_scope;
+
+    bool m_bearer_auth;
+    auth_scheme_t m_auth_scheme;
+    utility::string_t m_access_token_key;
+};
+
+namespace details { class oauth2_client_impl; }
+
+
 
 /// <summary>
 /// OAuth 2.0 configuration.
@@ -203,57 +325,53 @@ namespace details { class oauth2_pipeline_stage; }
 /// Usage for issuing authenticated requests:
 /// 1. Perform authorization as above to obtain the access token or use an existing token.
 /// -  Some services provide option to generate access tokens for testing purposes.
-/// 2. Pass the resulting oauth2_config with the access token to http_client_config::set_oauth2().
+/// 2. Pass the resulting oauth2_client_config with the access token to http_client_config::set_oauth2().
 /// 3. Construct http_client with this http_client_config. As a result, all HTTP requests
 ///    by that client will be OAuth 2.0 authenticated.
 ///
 /// </summary>
-class oauth2_config
+class oauth2_client
 {
 public:
+    _ASYNCRTIMP oauth2_client();
+    _ASYNCRTIMP ~oauth2_client();
 
-    oauth2_config(utility::string_t client_key, utility::string_t client_secret,
-        web::uri_builder auth_uri, const utility::string_t& token_endpoint,
-        utility::string_t redirect_uri, utility::string_t scope = utility::string_t())
-    : oauth2_config(
-        std::move(client_key),
-        std::move(client_secret),
-        std::move(auth_uri),
-        web::http::client::http_client(token_endpoint),
-        std::move(redirect_uri),
-        std::move(scope))
-    {}
+    /// <summary>
+    /// Get token.
+    /// </summary>
+    /// <returns>Token.</returns>
+    _ASYNCRTIMP oauth2_token token() const;
 
-    oauth2_config(utility::string_t client_key, utility::string_t client_secret,
-            web::uri_builder auth_uri, web::http::client::http_client token_client,
-            utility::string_t redirect_uri, utility::string_t scope=utility::string_t()) :
-                m_client_key(std::move(client_key)),
-                m_client_secret(std::move(client_secret)),
-                m_auth_uri(std::move(auth_uri)),
-                m_token_client(token_client._get_internal_pipeline()),
-                m_redirect_uri(std::move(redirect_uri)),
-                m_scope(std::move(scope)),
-                m_implicit_grant(false),
-                m_bearer_auth(true),
-                m_http_basic_auth(true),
-                m_access_token_key(web::http::oauth2::details::oauth2_strings::access_token)
-    {}
+    /// <summary>
+    /// Set token.
+    /// </summary>
+    /// <param name="tok">Token to set.</param>
+    _ASYNCRTIMP void set_token(const oauth2_token& tok);
 
     /// <summary>
     /// Builds an authorization URI to be loaded in the web browser/view.
-    /// The URI is built with auth_endpoint() as basis.
+    /// </summary>
+    /// <remark>
+    /// The URI is built with the configuration's auth_uri as basis.
     /// The implicit_grant() affects the built URI by selecting
     /// either authorization code or implicit grant flow.
-    /// You can set generate_state to generate a new random state string.
-    /// </summary>
-    /// <param name="generate_state">If true, a new random state() string is generated
-    /// which replaces the current state(). If false, state() is unchanged and used as-is.</param>
-    /// <returns>Authorization URI string.</returns>
-    _ASYNCRTIMP utility::string_t build_authorization_uri(bool generate_state);
+    /// Use <see cref="nonce_generator::shared_generate"/> to create a secure random string
+    /// suitable for use as a state cookie.
+    /// </remark>
+    /// <example>
+    /// <code>
+    ///   auto state_cookie = nonce_generator::shared_generate();
+    ///   auto auth_uri = my_oauth2_client.build_authorization_uri(state_cookie);
+    ///   auto redirect_uri = launch_browser(auth_uri.to_string());
+    ///   my_oauth2_client.token_from_redirected_uri(redirect_uri, state_cookie).wait();
+    /// </code>
+    /// </example>
+    _ASYNCRTIMP web::uri auth_code_flow(uri_builder redirect_uri, grant_type grant, const utility::string_t& state_cookie);
 
     /// <summary>
-    /// Fetch an access token (and possibly a refresh token) based on redirected URI.
-    /// Behavior depends on the implicit_grant() setting.
+    /// Sets the internal token by parsing a redirected API and completing the flow if required.
+    /// </summary>
+    /// <remarks>
     /// If implicit_grant() is false, the URI is parsed for 'code'
     /// parameter, and then token_from_code() is called with this code.
     /// See: http://tools.ietf.org/html/rfc6749#section-4.1
@@ -261,238 +379,72 @@ public:
     /// parameter, which directly contains the token(s).
     /// See: http://tools.ietf.org/html/rfc6749#section-4.2
     /// In both cases, the 'state' parameter is parsed and is verified to match state().
-    /// </summary>
-    /// <param name="redirected_uri">The URI where web browser/view was redirected after resource owner's authorization.</param>
-    /// <returns>Task that fetches the token(s) based on redirected URI.</returns>
-    _ASYNCRTIMP pplx::task<void> token_from_redirected_uri(const web::http::uri& redirected_uri);
+    /// </remarks>
+    /// <param name="redirected_uri">The URI where web browser/view was redirected after
+    /// resource owner's authorization.</param>
+    /// <param name="state_cookie">
+    /// The same string that was used to call <see cref="build_authorization_uri"/>. This
+    /// is checked against the state parameter of the <see cref="redirected_uri"/> and an
+    /// exception will be thrown if they are different.
+    /// </param>
+    /// <returns>A task that will be completed after the internal token field has been set or an error has occurred.</returns>
+    _ASYNCRTIMP pplx::task<void> set_token_async_from_redirected_uri(const web::http::uri& redirected_uri, grant_type grant, const utility::string_t& state_cookie);
 
     /// <summary>
-    /// Fetches an access token (and possibly a refresh token) from the token endpoint.
-    /// The task creates an HTTP request to the token_endpoint() which exchanges
+    /// Fetches a token from the token endpoint using an authorization code.
+    /// </summary>
+    /// <remarks>
+    /// Creates an HTTP request to the token endpoint which exchanges
     /// the authorization code for the token(s).
     /// This also sets the refresh token if one was returned.
     /// See: http://tools.ietf.org/html/rfc6749#section-4.1.3
-    /// </summary>
+    /// </remarks>
     /// <param name="authorization_code">Code received via redirect upon successful authorization.</param>
-    /// <returns>Task that fetches token(s) based on the authorization code.</returns>
-    pplx::task<void> token_from_code(const utility::string_t& authorization_code)
-    {
-        uri_builder ub;
-        ub.append_query(oauth2::details::oauth2_strings::grant_type, oauth2::details::oauth2_strings::authorization_code, false);
-        ub.append_query(oauth2::details::oauth2_strings::code, uri::encode_data_string(authorization_code), false);
-        ub.append_query(oauth2::details::oauth2_strings::redirect_uri, uri::encode_data_string(redirect_uri()), false);
-        return token_from_custom_request(std::move(ub));
-    }
+    /// <returns>A task that will be completed after the internal token has been set or an error has occurred.</returns>
+    _ASYNCRTIMP pplx::task<void> set_token_async_from_code(const utility::string_t& authorization_code);
 
     /// <summary>
     /// Fetches a new access token (and possibly a new refresh token) using the refresh token.
+    /// </summary>
+    /// <remarks>
     /// The task creates a HTTP request to the token_endpoint().
     /// If successful, resulting access token is set as active via set_token().
     /// See: http://tools.ietf.org/html/rfc6749#section-6
     /// This also sets a new refresh token if one was returned.
-    /// </summary>
-    /// <returns>Task that fetches the token(s) using the refresh token.</returns>
-    pplx::task<void> token_from_refresh()
-    {
-        uri_builder ub;
-        ub.append_query(oauth2::details::oauth2_strings::grant_type, oauth2::details::oauth2_strings::refresh_token, false);
-        ub.append_query(oauth2::details::oauth2_strings::refresh_token, uri::encode_data_string(token().refresh_token()), false);
-        return token_from_custom_request(std::move(ub));
-    }
+    /// </remarks>
+    /// <returns>A task that will be completed after the internal token has been set or an error has occurred.</returns>
+    _ASYNCRTIMP pplx::task<void> set_token_async_from_refresh();
 
     /// <summary>
     /// Performs a custom token request using the provided URI's query component.
     /// </summary>
     /// <remarks>
     /// This function can be used to interact with a nonstandard request flow.
-    /// See `token_from_refresh()` and `token_from_code()` for the built-in request flow implementations.
+    /// See <see cref="set_token_async_from_refresh"/> and <see cref="set_token_async_from_code"/> for the built-in request flow implementations.
     /// </remarks>
-    _ASYNCRTIMP pplx::task<void> token_from_custom_request(uri_builder request_body);
+    _ASYNCRTIMP pplx::task<void> set_token_async_from_custom_request(uri_builder request_body);
 
     /// <summary>
-    /// Returns enabled state of the configuration.
-    /// The oauth2_handler will perform OAuth 2.0 authentication only if
-    /// this method returns true.
-    /// Return value is true if access token is valid (=fetched or manually set).
+    /// Create a pipeline stage which adds the current `token()` to all http requests.
     /// </summary>
-    /// <returns>The configuration enabled state.</returns>
-    bool is_enabled() const { return token().is_valid_access_token(); }
-
-    /// <summary>
-    /// Get client key.
-    /// </summary>
-    /// <returns>Client key string.</returns>
-    const utility::string_t& client_key() const { return m_client_key; }
-    /// <summary>
-    /// Set client key.
-    /// </summary>
-    /// <param name="client_key">Client key string to set.</param>
-    void set_client_key(utility::string_t client_key) { m_client_key = std::move(client_key); }
-
-    /// <summary>
-    /// Get client secret.
-    /// </summary>
-    /// <returns>Client secret string.</returns>
-    const utility::string_t& client_secret() const { return m_client_secret; }
-    /// <summary>
-    /// Set client secret.
-    /// </summary>
-    /// <param name="client_secret">Client secret string to set.</param>
-    void set_client_secret(utility::string_t client_secret) { m_client_secret = std::move(client_secret); }
-
-    /// <summary>
-    /// Get the authorization endpoint URI
-    /// </summary>
-    const uri_builder& auth_uri_builder() const { return m_auth_uri; }
-
-    CASABLANCA_DEPRECATED("This API has been deprecated. Use `auth_uri_builder` instead.")
-    utility::string_t auth_endpoint() const { return m_auth_uri.to_string(); }
-
-    /// <summary>
-    /// Set authorization endpoint URI.
-    /// </summary>
-    void set_auth_uri_builder(const uri_builder& auth_endpoint) { m_auth_uri = auth_endpoint; }
-
-    CASABLANCA_DEPRECATED("This API has been deprecated. Use `set_auth_uri_builder` instead.")
-    void set_auth_endpoint(const uri_builder& auth_endpoint) { set_auth_uri_builder(auth_endpoint); }
-
-    /// <summary>
-    /// Set the `http_client` used to retrieve new tokens.
-    /// To use a proxy when retrieving tokens, configure the `http_client` before assigning it here.
-    /// </summary>
-    void set_token_client(web::http::client::http_client token_client) { m_token_client = token_client._get_internal_pipeline(); }
-
-    CASABLANCA_DEPRECATED("This API has been deprecated. Use `set_token_client` instead.")
-    void set_token_endpoint(utility::string_t token_endpoint) { set_token_client(web::http::client::http_client(token_endpoint)); }
-
-    /// <summary>
-    /// Get redirect URI string.
-    /// </summary>
-    /// <returns>Redirect URI string.</returns>
-    const utility::string_t& redirect_uri() const { return m_redirect_uri; }
-
-    /// <summary>
-    /// Set redirect URI string.
-    /// </summary>
-    /// <param name="redirect_uri">Redirect URI string to set.</param>
-    void set_redirect_uri(utility::string_t redirect_uri) { m_redirect_uri = std::move(redirect_uri); }
-
-    /// <summary>
-    /// Get scope used in authorization for token.
-    /// </summary>
-    /// <returns>Scope string used in authorization.</returns>
-    const utility::string_t& scope() const { return m_scope; }
-    /// <summary>
-    /// Set scope for authorization for token.
-    /// </summary>
-    /// <param name="scope">Scope string for authorization for token.</param>
-    void set_scope(utility::string_t scope) { m_scope = std::move(scope); }
-
-    /// <summary>
-    /// Get client state string used in authorization.
-    /// </summary>
-    /// <returns>Client state string used in authorization.</returns>
-    const utility::string_t& state() { return m_state; }
-
-    /// <summary>
-    /// Set client state string for authorization for token.
-    /// The state string is used in authorization for security reasons
-    /// (to uniquely identify authorization sessions).
-    /// If desired, suitably secure state string can be automatically generated
-    /// by build_authorization_uri().
-    /// A good state string consist of 30 or more random alphanumeric characters.
-    /// </summary>
-    /// <param name="state">Client authorization state string to set.</param>
-    void set_state(utility::string_t state) { m_state = std::move(state); }
-
-    /// <summary>
-    /// Get token.
-    /// </summary>
-    /// <returns>Token.</returns>
-    const oauth2_token& token() const { return m_token; }
-
-    /// <summary>
-    /// Set token.
-    /// </summary>
-    /// <param name="token">Token to set.</param>
-    void set_token(oauth2_token token) { m_token = std::move(token); }
-
-    /// <summary>
-    /// Get implicit grant setting for authorization.
-    /// </summary>
-    /// <returns>Implicit grant setting for authorization.</returns>
-    bool implicit_grant() const { return m_implicit_grant; }
-    /// <summary>
-    /// Set implicit grant setting for authorization.
-    /// False means authorization code grant is used for authorization.
-    /// True means implicit grant is used.
-    /// Default: False.
-    /// </summary>
-    /// <param name="implicit_grant">The implicit grant setting to set.</param>
-    void set_implicit_grant(bool implicit_grant) { m_implicit_grant = implicit_grant; }
-
-    /// <summary>
-    /// Get bearer token authentication setting.
-    /// </summary>
-    /// <returns>Bearer token authentication setting.</returns>
-    bool bearer_auth() const { return m_bearer_auth; }
-    /// <summary>
-    /// Set bearer token authentication setting.
-    /// This must be selected based on what the service accepts.
-    /// True means access token is passed in the request header. (http://tools.ietf.org/html/rfc6750#section-2.1)
-    /// False means access token in passed in the query parameters. (http://tools.ietf.org/html/rfc6750#section-2.3)
-    /// Default: True.
-    /// </summary>
-    /// <param name="bearer_auth">The bearer token authentication setting to set.</param>
-    void set_bearer_auth(bool bearer_auth) { m_bearer_auth = bearer_auth; }
-
-    /// <summary>
-    /// Get HTTP Basic authentication setting for token endpoint.
-    /// </summary>
-    /// <returns>HTTP Basic authentication setting for token endpoint.</returns>
-    bool http_basic_auth() const { return m_http_basic_auth; }
-    /// <summary>
-    /// Set HTTP Basic authentication setting for token endpoint.
-    /// This setting must be selected based on what the service accepts.
-    /// True means HTTP Basic authentication is used for the token endpoint.
-    /// False means client key & secret are passed in the HTTP request body.
-    /// Default: True.
-    /// </summary>
-    /// <param name="http_basic_auth">The HTTP Basic authentication setting to set.</param>
-    void set_http_basic_auth(bool http_basic_auth) { m_http_basic_auth = http_basic_auth; }
-
-    /// <summary>
-    /// Get access token key.
-    /// </summary>
-    /// <returns>Access token key string.</returns>
-    const utility::string_t&  access_token_key() const { return m_access_token_key; }
-
-    /// <summary>
-    /// Set access token key.
-    /// If the service requires a "non-standard" key you must set it here.
-    /// Default: "access_token".
-    /// </summary>
-    void set_access_token_key(utility::string_t access_token_key) { m_access_token_key = std::move(access_token_key); }
-
-    _ASYNCRTIMP std::shared_ptr<http::http_pipeline_stage> create_pipeline_stage() const;
+    /// <remarks>
+    /// The created pipeline stage shares internal state with this <see cref="oauth2_client"/> object.
+    /// To set the token that will be added by the pipeline stage, use the `set_token_XXX()` functions.
+    /// </remarks>
+    /// <example>
+    /// <code>
+    ///   my_http_client.add_handler(my_oauth2_client.create_pipeline_stage());
+    /// </code>
+    /// </example>
+    _ASYNCRTIMP std::shared_ptr<http::http_pipeline_stage> create_pipeline_stage();
 
 private:
-    utility::string_t m_client_key;
-    utility::string_t m_client_secret;
-    uri_builder m_auth_uri;
-    std::shared_ptr<::web::http::client::http_pipeline> m_token_client;
-    utility::string_t m_redirect_uri;
-    utility::string_t m_scope;
-    utility::string_t m_state;
+    std::shared_ptr<details::oauth2_client_impl> m_impl;
+};
 
-    bool m_implicit_grant;
-    bool m_bearer_auth;
-    bool m_http_basic_auth;
-    utility::string_t m_access_token_key;
-
-    oauth2_token m_token;
-
-    utility::nonce_generator m_state_generator;
+class oauth2_authorization_code_grant
+{
+    
 };
 
 } // namespace web::http::oauth2::experimental

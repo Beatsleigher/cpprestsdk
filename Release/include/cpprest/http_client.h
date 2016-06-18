@@ -325,7 +325,7 @@ public:
 
 private:
     web_proxy m_proxy;
-    http::client::credentials m_credentials;
+    web::credentials m_credentials;
     // Whether or not to guarantee ordering, i.e. only using one underlying TCP connection.
     bool m_guarantee_order;
 

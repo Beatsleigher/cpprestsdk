@@ -52,51 +52,145 @@ namespace details
 namespace experimental
 {
 
-utility::string_t oauth2_config::build_authorization_uri(bool generate_state)
+namespace details
 {
-    auto ub = auth_uri_builder();
-    if (implicit_grant())
-        ub.append_query(oauth2_strings::response_type, oauth2_strings::token);
-    else
-        ub.append_query(oauth2_strings::response_type, oauth2_strings::code);
-    ub.append_query(oauth2_strings::client_id, client_key());
-    ub.append_query(oauth2_strings::redirect_uri, redirect_uri());
-
-    if (generate_state)
+    class oauth2_client_impl : public http_pipeline_stage
     {
-        m_state = m_state_generator.generate();
-    }
-    ub.append_query(oauth2_strings::state, state());
+    private:
+        mutable std::mutex m_lock;
+        oauth2_token m_token;
 
-    if (!scope().empty())
-    {
-        ub.append_query(oauth2_strings::scope, scope());
-    }
-    return ub.to_string();
+    public:
+        oauth2_client_impl(const oauth2_client_config& config) : m_config(config) {}
+
+        void set_token(oauth2_token tok)
+        {
+            std::lock_guard<std::mutex> lock(m_lock);
+            m_token = std::move(tok);
+        }
+        oauth2_token token() const
+        {
+            oauth2_token tok;
+            {
+                std::lock_guard<std::mutex> lock(m_lock);
+                tok = m_token;
+            }
+            return tok;
+        }
+
+        const oauth2_client_config m_config;
+
+        virtual pplx::task<http_response> propagate(http_request request) override
+        {
+            if (m_config.bearer_auth())
+            {
+                utility::string_t auth_hdr = _XPLATSTR("Bearer ");
+                {
+                    std::lock_guard<std::mutex> lock(m_lock);
+                    auth_hdr += m_token.access_token();
+                }
+                request.headers().add(header_names::authorization, auth_hdr);
+            }
+            else
+            {
+                uri_builder ub(request.request_uri());
+                utility::string_t access_token;
+                {
+                    std::lock_guard<std::mutex> lock(m_lock);
+                    access_token = m_token.access_token();
+                }
+                ub.append_query(m_config.access_token_key(), access_token);
+                request.set_request_uri(ub.to_uri());
+            }
+            return next_stage()->propagate(request);
+        }
+
+    };
 }
 
-pplx::task<void> oauth2_config::token_from_redirected_uri(const web::http::uri& redirected_uri)
+oauth2_client::oauth2_client(const oauth2_client_config& config)
+    : m_impl(std::make_shared<details::oauth2_client_impl>(config))
+{}
+
+oauth2_client::~oauth2_client() {}
+
+void oauth2_client::set_token(const oauth2_token& tok)
 {
-    auto query = uri::split_query((implicit_grant()) ? redirected_uri.fragment() : redirected_uri.query());
+    m_impl->set_token(tok);
+}
+
+oauth2_token oauth2_client::token() const
+{
+    return m_impl->token();
+}
+
+web::uri oauth2_client::redirect_uri() const
+{
+    return m_impl->m_config.redirect_uri();
+}
+
+web::uri oauth2_client::build_authorization_uri(grant_type grant, const utility::string_t& state_cookie) const
+{
+    const auto& config = m_impl->m_config;
+    auto ub = config.auth_uri_builder();
+    if (grant == grant_type::implicit)
+        ub.append_query(oauth2_strings::response_type, oauth2_strings::token);
+    else if (grant == grant_type::authorization_code)
+        ub.append_query(oauth2_strings::response_type, oauth2_strings::code);
+    else
+        std::abort();
+    ub.append_query(oauth2_strings::client_id, config._token_client().client_config().credentials().username());
+    ub.append_query(oauth2_strings::redirect_uri, config.redirect_uri());
+
+    ub.append_query(oauth2_strings::state, state_cookie);
+
+    if (!config.scope().empty())
+    {
+        ub.append_query(oauth2_strings::scope, config.scope());
+    }
+    return ub.to_uri();
+}
+
+pplx::task<void> oauth2_client::set_token_async_from_code(const utility::string_t& authorization_code)
+{
+    uri_builder ub;
+    ub.append_query(oauth2::details::oauth2_strings::grant_type, oauth2::details::oauth2_strings::authorization_code, false);
+    ub.append_query(oauth2::details::oauth2_strings::code, uri::encode_data_string(authorization_code), false);
+    ub.append_query(oauth2::details::oauth2_strings::redirect_uri, uri::encode_data_string(m_impl->m_config.redirect_uri()), false);
+    return set_token_async_from_custom_request(std::move(ub));
+}
+
+pplx::task<void> oauth2_client::set_token_async_from_refresh()
+{
+    uri_builder ub;
+    ub.append_query(oauth2::details::oauth2_strings::grant_type, oauth2::details::oauth2_strings::refresh_token, false);
+    ub.append_query(oauth2::details::oauth2_strings::refresh_token, uri::encode_data_string(token().refresh_token()), false);
+    return set_token_async_from_custom_request(std::move(ub));
+}
+
+pplx::task<void> oauth2_client::set_token_async_from_redirected_uri(const web::http::uri& redirected_uri, grant_type grant, const utility::string_t& state_cookie)
+{
+    const auto& config = m_impl->m_config;
+    auto query = uri::split_query(grant == grant_type::implicit ? redirected_uri.fragment() : redirected_uri.query());
 
     auto state_param = query.find(oauth2_strings::state);
     if (state_param == query.end())
     {
-        return pplx::task_from_exception<void>(oauth2_exception("parameter 'state' missing from redirected URI."));
+        throw oauth2_exception("parameter 'state' missing from redirected URI.");
     }
-    if (state() != state_param->second)
+    if (state_cookie != state_param->second)
     {
         std::ostringstream err;
         err.imbue(std::locale::classic());
         err << "redirected URI parameter 'state'='" << utility::conversions::to_utf8string(state_param->second)
-            << "' does not match state='" << utility::conversions::to_utf8string(state()) << "'.";
-        return pplx::task_from_exception<void>(oauth2_exception(err.str()));
+            << "' does not match state='" << utility::conversions::to_utf8string(state_cookie) << "'.";
+        throw oauth2_exception(err.str());
     }
 
     auto code_param = query.find(oauth2_strings::code);
     if (code_param != query.end())
     {
-        return token_from_code(code_param->second);
+        return set_token_async_from_code(code_param->second);
     }
 
     // NOTE: The redirected URI contains access token only in the implicit grant.
@@ -104,7 +198,7 @@ pplx::task<void> oauth2_config::token_from_redirected_uri(const web::http::uri& 
     auto token_param = query.find(oauth2_strings::access_token);
     if (token_param == query.end())
     {
-        return pplx::task_from_exception<void>(oauth2_exception("either 'code' or 'access_token' parameter must be in the redirected URI."));
+        throw oauth2_exception("either 'code' or 'access_token' parameter must be in the redirected URI.");
     }
 
     set_token(token_param->second);
@@ -184,77 +278,61 @@ static oauth2_token _parse_token_from_json(const json::value& token_json, const 
     return result;
 }
 
-pplx::task<void> oauth2_config::token_from_custom_request(uri_builder request_body_ub)
+pplx::task<void> oauth2_client::set_token_async_from_custom_request(uri_builder request_body_ub)
 {
+    const auto& config = m_impl->m_config;
+
     http_request request;
     request.set_method(methods::POST);
     request.set_request_uri(utility::string_t());
 
-    if (!scope().empty())
+    if (!config.scope().empty())
     {
-        request_body_ub.append_query(oauth2_strings::scope, uri::encode_data_string(scope()), false);
+        request_body_ub.append_query(oauth2_strings::scope, uri::encode_data_string(config.scope()), false);
     }
 
-    if (http_basic_auth())
+    const auto& creds = config._token_client().client_config().credentials();
+
+    if (config.auth_scheme() == auth_scheme_t::http_basic)
     {
-        // Build HTTP Basic authorization header.
-        const std::string creds_utf8(to_utf8string(
-            uri::encode_data_string(client_key()) + U(":") + uri::encode_data_string(client_secret())));
+        // Build HTTP Basic authorization header from the inner http_client_config's credentials
+
+        auto unenc_auth = uri::encode_data_string(creds.username());
+        unenc_auth.push_back(U(':'));
+        {
+            auto plaintext_secret = creds._decrypt();
+            unenc_auth.append(uri::encode_data_string(*plaintext_secret));
+        }
+
+        auto utf8_unenc_auth = to_utf8string(std::move(unenc_auth));
+
         request.headers().add(header_names::authorization, U("Basic ")
-            + _to_base64(reinterpret_cast<const unsigned char*>(creds_utf8.data()), creds_utf8.size()));
+            + _to_base64(reinterpret_cast<const unsigned char*>(utf8_unenc_auth.data()), utf8_unenc_auth.size()));
     }
     else
     {
         // Add credentials to query as-is.
-        request_body_ub.append_query(oauth2_strings::client_id, uri::encode_data_string(client_key()), false);
-        request_body_ub.append_query(oauth2_strings::client_secret, uri::encode_data_string(client_secret()), false);
+        request_body_ub.append_query(oauth2_strings::client_id, uri::encode_data_string(creds.username()), false);
+
+        auto plaintext_secret = creds._decrypt();
+        request_body_ub.append_query(oauth2_strings::client_secret, uri::encode_data_string(*plaintext_secret), false);
     }
     request.set_body(request_body_ub.query(), mime_types::application_x_www_form_urlencoded);
 
-    return http_client(m_token_client).request(request)
+    return config._token_client().request(request)
     .then([](http_response resp)
     {
         return resp.extract_json();
     })
-    .then([this](json::value json_resp) -> void
+    .then([impl = m_impl](json::value json_resp) -> void
     {
-        set_token(_parse_token_from_json(json_resp, scope()));
+        impl->set_token(_parse_token_from_json(json_resp, impl->m_config.scope()));
     });
 }
 
-namespace details
+std::shared_ptr<http::http_pipeline_stage> oauth2_client::create_pipeline_stage()
 {
-    class oauth2_pipeline_stage : public http_pipeline_stage
-    {
-    public:
-        oauth2_pipeline_stage(const oauth2_config& cfg) :
-            m_config(cfg)
-        {}
-
-        virtual pplx::task<http_response> propagate(http_request request) override
-        {
-            if (m_config.bearer_auth())
-            {
-                request.headers().add(header_names::authorization, _XPLATSTR("Bearer ") + m_config.token().access_token());
-            }
-            else
-            {
-                uri_builder ub(request.request_uri());
-                ub.append_query(m_config.access_token_key(), m_config.token().access_token());
-                request.set_request_uri(ub.to_uri());
-            }
-            return next_stage()->propagate(request);
-        }
-
-    private:
-        oauth2_config m_config;
-    };
-
-}
-
-std::shared_ptr<http::http_pipeline_stage> oauth2_config::create_pipeline_stage() const
-{
-    return std::static_pointer_cast<http::http_pipeline_stage>(std::make_shared<details::oauth2_pipeline_stage>(*this));
+    return std::static_pointer_cast<http::http_pipeline_stage>(m_impl);
 }
 
 }}}} // namespace web::http::oauth2::experimental
