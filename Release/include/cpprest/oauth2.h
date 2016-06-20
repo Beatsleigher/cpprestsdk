@@ -175,6 +175,13 @@ enum class authenticated_request_mode
     uri_query_parameter
 };
 
+enum class client_credentials_mode
+{
+    http_basic_auth,
+    request_body,
+    none
+};
+
 /// <summary>
 /// OAuth 2.0 configuration.
 ///
@@ -255,9 +262,10 @@ public:
     _ASYNCRTIMP pplx::task<void> set_token_via_auth_code_grant(
         const web::uri& auth_endpoint,
         const web::uri& local_listen_uri,
-        web::http::client::http_client auth_server,
+        web::http::client::http_client token_client,
         launch_user_agent_callback launch_user_agent,
-        const utility::string_t& scope = utility::string_t());
+        const utility::string_t& scope = utility::string_t(),
+        client_credentials_mode creds_mode = client_credentials_mode::http_basic_auth);
 
     _ASYNCRTIMP pplx::task<void> set_token_via_implicit_grant(
         const utility::string_t& client_id,
@@ -267,17 +275,21 @@ public:
         const utility::string_t& scope = utility::string_t());
 
     _ASYNCRTIMP pplx::task<void> set_token_via_resource_owner_creds_grant(
-        web::http::client::http_client auth_server,
+        web::http::client::http_client token_client,
         const web::credentials& owner_credentials,
-        const utility::string_t& scope = utility::string_t());
+        const utility::string_t& scope = utility::string_t(),
+        client_credentials_mode creds_mode = client_credentials_mode::http_basic_auth);
 
     _ASYNCRTIMP pplx::task<void> set_token_via_extension_grant(
         web::uri_builder request_body,
-        web::http::client::http_client auth_server,
-        const utility::string_t& scope);
+        web::http::client::http_client token_client,
+        const utility::string_t& scope = utility::string_t(),
+        client_credentials_mode creds_mode = client_credentials_mode::http_basic_auth);
 
     _ASYNCRTIMP pplx::task<void> set_token_via_refresh_token(
-        web::http::client::http_client auth_server);
+        web::http::client::http_client token_client,
+        const utility::string_t& scope = utility::string_t(),
+        client_credentials_mode creds_mode = client_credentials_mode::http_basic_auth);
 
     /// <summary>
     /// Create a pipeline stage which adds the current `token()` to all http requests.

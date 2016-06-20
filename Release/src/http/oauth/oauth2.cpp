@@ -290,38 +290,54 @@ namespace
             throw oauth2_exception(err);
         }
     }
+
+    void append_client_credentials(http_request& request, uri_builder& request_body, const web::credentials& creds, client_credentials_mode mode)
+    {
+        if (mode == client_credentials_mode::none)
+        {
+        }
+        else if (mode == client_credentials_mode::http_basic_auth)
+        {
+            auto unenc_auth = uri::encode_data_string(creds.username());
+            unenc_auth.push_back(U(':'));
+            {
+                auto plaintext_secret = creds._decrypt();
+                unenc_auth.append(uri::encode_data_string(*plaintext_secret));
+            }
+            auto utf8_unenc_auth = to_utf8string(std::move(unenc_auth));
+
+            request.headers().add(header_names::authorization, U("Basic ")
+                + _to_base64(reinterpret_cast<const unsigned char*>(utf8_unenc_auth.data()), utf8_unenc_auth.size()));
+        }
+        else if (mode == client_credentials_mode::request_body)
+        {
+            request_body.append_query(oauth2_strings::client_id, uri::encode_data_string(creds.username()), false);
+            request_body.append_query(oauth2_strings::client_secret, uri::encode_data_string(*creds._decrypt()), false);
+        }
+        else
+        {
+            std::abort();
+        }
+    }
 }
 
 pplx::task<void> oauth2_client::set_token_via_auth_code_grant(
     const web::uri& auth_endpoint,
     const web::uri& local_uri,
-    web::http::client::http_client auth_server,
+    web::http::client::http_client token_client,
     oauth2_client::launch_user_agent_callback launch_user_agent,
-    const utility::string_t& scope)
+    const utility::string_t& scope,
+    client_credentials_mode creds_mode)
 {
-    pplx::task_completion_event<web::uri> tce;
-
-    web::http::experimental::listener::http_listener listener(local_uri);
-    listener.support([tce](http::http_request request) -> void
-    {
-        tce.set(request.request_uri());
-        request.reply(status_codes::OK, U("Ok."));
-    });
-
     auto state_cookie = utility::nonce_generator::shared_generate();
 
+    uri_builder user_agent_base_uri(auth_endpoint);
+    user_agent_base_uri.append_query(oauth2_strings::response_type, oauth2_strings::code);
+    auto user_agent_url = build_authorization_uri(std::move(user_agent_base_uri), token_client.client_config().credentials().username(), local_uri.to_string(), state_cookie, scope);
+
     auto self = *this;
-    return listener.open().then([tce, auth_endpoint, local_uri, state_cookie, scope, launch_user_agent, auth_server]()
-    {
-        uri_builder user_agent_base_uri(auth_endpoint);
-        user_agent_base_uri.append_query(oauth2_strings::response_type, oauth2_strings::code);
-
-        auto user_agent_url = build_authorization_uri(std::move(user_agent_base_uri), auth_server.client_config().credentials().username(), local_uri.to_string(), state_cookie, scope);
-        launch_user_agent(user_agent_url, tce);
-
-        return pplx::create_task(tce);
-    }
-    ).then([state_cookie, scope, local_uri, auth_server, self](const web::uri& redirected_uri) mutable
+    return communicate_with_user_agent(user_agent_url, local_uri, launch_user_agent)
+        .then([state_cookie, scope, local_uri, token_client, self, creds_mode](const web::uri& redirected_uri) mutable
     {
         auto query = uri::split_query(redirected_uri.query());
 
@@ -338,7 +354,7 @@ pplx::task<void> oauth2_client::set_token_via_auth_code_grant(
         request_body_ub.append_query(oauth2::details::oauth2_strings::code, uri::encode_data_string(code_param->second), false);
         request_body_ub.append_query(oauth2::details::oauth2_strings::redirect_uri, uri::encode_data_string(local_uri.to_string()), false);
 
-        return self.set_token_via_extension_grant(request_body_ub, auth_server, scope);
+        return self.set_token_via_extension_grant(request_body_ub, token_client, scope, creds_mode);
     });
 }
 
@@ -355,7 +371,7 @@ pplx::task<void> oauth2_client::set_token_via_implicit_grant(
     user_agent_base_uri.append_query(oauth2_strings::response_type, oauth2_strings::token);
     auto user_agent_url = build_authorization_uri(std::move(user_agent_base_uri), client_id, local_uri.to_string(), state_cookie, scope);
 
-    auto self = m_impl;
+    auto self = *this;
     return communicate_with_user_agent(user_agent_url, local_uri, launch_user_agent)
         .then([state_cookie, scope, self](const web::uri& redirected_uri) mutable
     {
@@ -370,7 +386,6 @@ pplx::task<void> oauth2_client::set_token_via_implicit_grant(
         }
 
         // Parse token from query
-
         oauth2_token tok(token_param->second);
         auto query_it = query.find(oauth2_strings::scope);
         if (query_it != query.end())
@@ -391,27 +406,29 @@ pplx::task<void> oauth2_client::set_token_via_implicit_grant(
         }
         tok.set_token_type(oauth2_strings::bearer);
 
-        self->set_token(std::move(tok));
+        self.set_token(tok);
     });
 }
 
 pplx::task<void> oauth2_client::set_token_via_resource_owner_creds_grant(
-    web::http::client::http_client auth_server,
+    web::http::client::http_client token_client,
     const web::credentials& owner_credentials,
-    const utility::string_t& scope)
+    const utility::string_t& scope,
+    client_credentials_mode creds_mode)
 {
     uri_builder request_body_ub;
     request_body_ub.append_query(oauth2::details::oauth2_strings::grant_type, oauth2::details::oauth2_strings::password, false);
     request_body_ub.append_query(oauth2::details::oauth2_strings::username, uri::encode_data_string(owner_credentials.username()), false);
     request_body_ub.append_query(oauth2::details::oauth2_strings::password, uri::encode_data_string(*owner_credentials._decrypt()), false);
 
-    return set_token_via_extension_grant(request_body_ub, auth_server, scope);
+    return set_token_via_extension_grant(request_body_ub, token_client, scope, creds_mode);
 }
 
 pplx::task<void> oauth2_client::set_token_via_extension_grant(
     web::uri_builder request_body,
-    web::http::client::http_client auth_server,
-    const utility::string_t& scope)
+    web::http::client::http_client token_client,
+    const utility::string_t& scope,
+    client_credentials_mode creds_mode)
 {
     http_request request;
     request.set_method(methods::POST);
@@ -422,24 +439,12 @@ pplx::task<void> oauth2_client::set_token_via_extension_grant(
         request_body.append_query(oauth2_strings::scope, uri::encode_data_string(scope), false);
     }
 
-    const auto& creds = auth_server.client_config().credentials();
-
-    // Build HTTP Basic authorization header from the inner http_client_config's credentials
-    auto unenc_auth = uri::encode_data_string(creds.username());
-    unenc_auth.push_back(U(':'));
-    {
-        auto plaintext_secret = creds._decrypt();
-        unenc_auth.append(uri::encode_data_string(*plaintext_secret));
-    }
-    auto utf8_unenc_auth = to_utf8string(std::move(unenc_auth));
-
-    request.headers().add(header_names::authorization, U("Basic ")
-        + _to_base64(reinterpret_cast<const unsigned char*>(utf8_unenc_auth.data()), utf8_unenc_auth.size()));
+    append_client_credentials(request, request_body, token_client.client_config().credentials(), creds_mode);
 
     request.set_body(request_body.query(), mime_types::application_x_www_form_urlencoded);
 
     auto self = *this;
-    return auth_server.request(request)
+    return token_client.request(request)
     .then([](http_response resp)
     {
         return resp.extract_json();
@@ -451,44 +456,17 @@ pplx::task<void> oauth2_client::set_token_via_extension_grant(
 }
 
 pplx::task<void> oauth2_client::set_token_via_refresh_token(
-    web::http::client::http_client auth_server)
+    web::http::client::http_client token_client,
+    const utility::string_t& scope,
+    client_credentials_mode creds_mode)
 {
     auto tok = m_impl->token();
-    auto scope = tok.scope();
 
     uri_builder request_body_ub;
     request_body_ub.append_query(oauth2::details::oauth2_strings::grant_type, oauth2::details::oauth2_strings::refresh_token, false);
     request_body_ub.append_query(oauth2::details::oauth2_strings::refresh_token, uri::encode_data_string(tok.refresh_token()), false);
 
-    http_request request;
-    request.set_method(methods::POST);
-    request.set_request_uri(utility::string_t());
-
-    const auto& creds = auth_server.client_config().credentials();
-
-    // Build HTTP Basic authorization header from the inner http_client_config's credentials
-    auto unenc_auth = uri::encode_data_string(creds.username());
-    unenc_auth.push_back(U(':'));
-    {
-        auto plaintext_secret = creds._decrypt();
-        unenc_auth.append(uri::encode_data_string(*plaintext_secret));
-    }
-    auto utf8_unenc_auth = to_utf8string(std::move(unenc_auth));
-
-    request.headers().add(header_names::authorization, U("Basic ")
-        + _to_base64(reinterpret_cast<const unsigned char*>(utf8_unenc_auth.data()), utf8_unenc_auth.size()));
-
-    request.set_body(request_body_ub.query(), mime_types::application_x_www_form_urlencoded);
-
-    auto self = m_impl;
-    return auth_server.request(request).then([](http_response resp)
-    {
-        return resp.extract_json();
-    }
-    ).then([self, scope](const json::value& json_resp) -> void
-    {
-        self->set_token(parse_token_from_json(json_resp, scope));
-    });
+    return set_token_via_extension_grant(std::move(request_body_ub), token_client, scope, creds_mode);
 }
 
 std::shared_ptr<http::http_pipeline_stage> oauth2_client::create_pipeline_stage(
