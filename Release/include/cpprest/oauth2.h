@@ -224,7 +224,7 @@ enum class client_credentials_mode
 class oauth2_client
 {
 public:
-    _ASYNCRTIMP oauth2_client();
+    _ASYNCRTIMP explicit oauth2_client(const oauth2_token& token = oauth2_token());
     _ASYNCRTIMP ~oauth2_client();
 
     /// <summary>
@@ -259,7 +259,7 @@ public:
     ///   my_oauth2_client.token_from_redirected_uri(redirect_uri, state_cookie).wait();
     /// </code>
     /// </example>
-    _ASYNCRTIMP pplx::task<void> set_token_via_auth_code_grant(
+    static _ASYNCRTIMP pplx::task<oauth2_client> __cdecl create_with_auth_code_grant(
         const web::uri& auth_endpoint,
         const web::uri& local_listen_uri,
         web::http::client::http_client token_client,
@@ -267,16 +267,22 @@ public:
         const utility::string_t& scope = utility::string_t(),
         client_credentials_mode creds_mode = client_credentials_mode::http_basic_auth);
 
-    _ASYNCRTIMP pplx::task<void> set_token_via_implicit_grant(
+    static _ASYNCRTIMP pplx::task<oauth2_client> __cdecl create_with_implicit_grant(
         const utility::string_t& client_id,
         const web::uri& auth_endpoint,
         const web::uri& local_listen_uri,
         launch_user_agent_callback launch_user_agent,
         const utility::string_t& scope = utility::string_t());
 
-    _ASYNCRTIMP pplx::task<void> set_token_via_resource_owner_creds_grant(
+    static _ASYNCRTIMP pplx::task<oauth2_client> __cdecl create_with_resource_owner_creds_grant(
         web::http::client::http_client token_client,
         const web::credentials& owner_credentials,
+        const utility::string_t& scope = utility::string_t(),
+        client_credentials_mode creds_mode = client_credentials_mode::http_basic_auth);
+
+    static _ASYNCRTIMP pplx::task<oauth2_client> __cdecl create_with_extension_grant(
+        web::uri_builder request_body,
+        web::http::client::http_client token_client,
         const utility::string_t& scope = utility::string_t(),
         client_credentials_mode creds_mode = client_credentials_mode::http_basic_auth);
 

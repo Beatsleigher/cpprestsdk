@@ -69,6 +69,8 @@ namespace details
         friend struct details::oauth2_pipeline_stage;
 
     public:
+        oauth2_shared_token(const oauth2_token& tok) : m_token(tok) {}
+
         void set_token(oauth2_token tok)
         {
             std::lock_guard<std::mutex> lock(m_lock);
@@ -129,8 +131,8 @@ namespace
     };
 }}
 
-oauth2_client::oauth2_client()
-    : m_impl(std::make_shared<details::oauth2_shared_token>())
+oauth2_client::oauth2_client(const oauth2_token& token)
+    : m_impl(std::make_shared<details::oauth2_shared_token>(token))
 {}
 
 oauth2_client::~oauth2_client() {}
@@ -319,9 +321,40 @@ namespace
             std::abort();
         }
     }
+
+    pplx::task<oauth2_token> extension_grant_extract_token(
+        web::uri_builder request_body,
+        web::http::client::http_client token_client,
+        const utility::string_t& scope,
+        client_credentials_mode creds_mode)
+    {
+        http_request request;
+        request.set_method(methods::POST);
+        request.set_request_uri(utility::string_t());
+
+        if (!scope.empty())
+        {
+            request_body.append_query(oauth2_strings::scope, uri::encode_data_string(scope), false);
+        }
+
+        append_client_credentials(request, request_body, token_client.client_config().credentials(), creds_mode);
+
+        request.set_body(request_body.query(), mime_types::application_x_www_form_urlencoded);
+
+        return token_client.request(request)
+            .then([](http_response resp)
+            {
+                return resp.extract_json();
+            }
+            ).then([scope](const web::json::value& v)
+            {
+                return parse_token_from_json(v, scope);
+            });
+    }
+
 }
 
-pplx::task<void> oauth2_client::set_token_via_auth_code_grant(
+pplx::task<oauth2_client> oauth2_client::create_with_auth_code_grant(
     const web::uri& auth_endpoint,
     const web::uri& local_uri,
     web::http::client::http_client token_client,
@@ -335,9 +368,8 @@ pplx::task<void> oauth2_client::set_token_via_auth_code_grant(
     user_agent_base_uri.append_query(oauth2_strings::response_type, oauth2_strings::code);
     auto user_agent_url = build_authorization_uri(std::move(user_agent_base_uri), token_client.client_config().credentials().username(), local_uri.to_string(), state_cookie, scope);
 
-    auto self = *this;
     return communicate_with_user_agent(user_agent_url, local_uri, launch_user_agent)
-        .then([state_cookie, scope, local_uri, token_client, self, creds_mode](const web::uri& redirected_uri) mutable
+        .then([state_cookie, scope, local_uri, token_client, creds_mode](const web::uri& redirected_uri) mutable
     {
         auto query = uri::split_query(redirected_uri.query());
 
@@ -354,11 +386,11 @@ pplx::task<void> oauth2_client::set_token_via_auth_code_grant(
         request_body_ub.append_query(oauth2::details::oauth2_strings::code, uri::encode_data_string(code_param->second), false);
         request_body_ub.append_query(oauth2::details::oauth2_strings::redirect_uri, uri::encode_data_string(local_uri.to_string()), false);
 
-        return self.set_token_via_extension_grant(request_body_ub, token_client, scope, creds_mode);
+        return create_with_extension_grant(request_body_ub, token_client, scope, creds_mode);
     });
 }
 
-pplx::task<void> oauth2_client::set_token_via_implicit_grant(
+pplx::task<oauth2_client> oauth2_client::create_with_implicit_grant(
     const utility::string_t& client_id,
     const web::uri& auth_endpoint,
     const web::uri& local_uri,
@@ -371,9 +403,8 @@ pplx::task<void> oauth2_client::set_token_via_implicit_grant(
     user_agent_base_uri.append_query(oauth2_strings::response_type, oauth2_strings::token);
     auto user_agent_url = build_authorization_uri(std::move(user_agent_base_uri), client_id, local_uri.to_string(), state_cookie, scope);
 
-    auto self = *this;
     return communicate_with_user_agent(user_agent_url, local_uri, launch_user_agent)
-        .then([state_cookie, scope, self](const web::uri& redirected_uri) mutable
+        .then([state_cookie, scope](const web::uri& redirected_uri) mutable
     {
         auto query = uri::split_query(redirected_uri.fragment());
 
@@ -406,11 +437,11 @@ pplx::task<void> oauth2_client::set_token_via_implicit_grant(
         }
         tok.set_token_type(oauth2_strings::bearer);
 
-        self.set_token(tok);
+        return oauth2_client(tok);
     });
 }
 
-pplx::task<void> oauth2_client::set_token_via_resource_owner_creds_grant(
+pplx::task<oauth2_client> oauth2_client::create_with_resource_owner_creds_grant(
     web::http::client::http_client token_client,
     const web::credentials& owner_credentials,
     const utility::string_t& scope,
@@ -421,7 +452,20 @@ pplx::task<void> oauth2_client::set_token_via_resource_owner_creds_grant(
     request_body_ub.append_query(oauth2::details::oauth2_strings::username, uri::encode_data_string(owner_credentials.username()), false);
     request_body_ub.append_query(oauth2::details::oauth2_strings::password, uri::encode_data_string(*owner_credentials._decrypt()), false);
 
-    return set_token_via_extension_grant(request_body_ub, token_client, scope, creds_mode);
+    return create_with_extension_grant(request_body_ub, token_client, scope, creds_mode);
+}
+
+pplx::task<oauth2_client> oauth2_client::create_with_extension_grant(
+    web::uri_builder request_body,
+    web::http::client::http_client token_client,
+    const utility::string_t& scope,
+    client_credentials_mode creds_mode)
+{
+    return extension_grant_extract_token(request_body, token_client, scope, creds_mode)
+        .then([](const oauth2_token& tok)
+    {
+        return oauth2_client(tok);
+    });
 }
 
 pplx::task<void> oauth2_client::set_token_via_extension_grant(
@@ -430,28 +474,11 @@ pplx::task<void> oauth2_client::set_token_via_extension_grant(
     const utility::string_t& scope,
     client_credentials_mode creds_mode)
 {
-    http_request request;
-    request.set_method(methods::POST);
-    request.set_request_uri(utility::string_t());
-
-    if (!scope.empty())
+    auto& self = *this;
+    return extension_grant_extract_token(request_body, token_client, scope, creds_mode)
+        .then([self](const oauth2_token& tok)
     {
-        request_body.append_query(oauth2_strings::scope, uri::encode_data_string(scope), false);
-    }
-
-    append_client_credentials(request, request_body, token_client.client_config().credentials(), creds_mode);
-
-    request.set_body(request_body.query(), mime_types::application_x_www_form_urlencoded);
-
-    auto self = *this;
-    return token_client.request(request)
-    .then([](http_response resp)
-    {
-        return resp.extract_json();
-    }
-    ).then([self, scope](const json::value& json_resp) -> void
-    {
-        self.m_impl->set_token(parse_token_from_json(json_resp, scope));
+        self.m_impl->set_token(tok);
     });
 }
 

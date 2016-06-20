@@ -92,19 +92,16 @@ void open_browser_callback(const web::uri& auth_uri, pplx::task_completion_event
 
 void dropbox_session_sample()
 {
-    oauth2_client auth;
-    {
-        http_client_config config;
-        config.set_credentials(web::credentials(s_dropbox_key, s_dropbox_secret));
+    http_client_config config;
+    config.set_credentials(web::credentials(s_dropbox_key, s_dropbox_secret));
 
-        http_client token_client(U("https://api.dropbox.com/1/oauth2/token"), config);
+    http_client token_client(U("https://api.dropbox.com/1/oauth2/token"), config);
 
-        auth.set_token_via_auth_code_grant(
-            U("https://www.dropbox.com/1/oauth2/authorize"),
-            U("http://localhost:8889/"),
-            token_client,
-            open_browser_callback).wait();
-    }
+    oauth2_client auth = oauth2_client::create_with_auth_code_grant(
+        U("https://www.dropbox.com/1/oauth2/authorize"),
+        U("http://localhost:8889/"),
+        token_client,
+        open_browser_callback).get();
 
     http_client api(U("https://api.dropbox.com/1/"));
     api.add_handler(auth.create_pipeline_stage());
@@ -115,20 +112,18 @@ void dropbox_session_sample()
 
 void linkedin_session_sample()
 {
-    oauth2_client auth;
-    {
-        http_client_config config;
-        config.set_credentials(web::credentials(s_linkedin_key, s_linkedin_secret));
+    http_client_config config;
+    config.set_credentials(web::credentials(s_linkedin_key, s_linkedin_secret));
 
-        http_client token_client(U("https://www.linkedin.com/uas/oauth2/accessToken"), config);
+    http_client token_client(U("https://www.linkedin.com/uas/oauth2/accessToken"), config);
 
-        auth.set_token_via_auth_code_grant(U("https://www.linkedin.com/uas/oauth2/authorization"),
-            U("http://localhost:8888/"),
-            token_client,
-            open_browser_callback,
-            utility::string_t(),
-            client_credentials_mode::request_body).wait();
-    }
+    oauth2_client auth = oauth2_client::create_with_auth_code_grant(U("https://www.linkedin.com/uas/oauth2/authorization"),
+        U("http://localhost:8888/"),
+        token_client,
+        open_browser_callback,
+        utility::string_t(),
+        client_credentials_mode::request_body).get();
+
     http_client api(U("https://api.linkedin.com/v1/people/"));
     api.add_handler(auth.create_pipeline_stage(authenticated_request_mode::uri_query_parameter, U("oauth2_access_token")));
 
@@ -138,19 +133,17 @@ void linkedin_session_sample()
 
 void live_session_sample()
 {
-    oauth2_client auth;
-    {
-        http_client_config config;
-        config.set_credentials(web::credentials(s_live_key, s_live_secret));
+    http_client_config config;
+    config.set_credentials(web::credentials(s_live_key, s_live_secret));
 
-        http_client token_client(U("https://login.live.com/oauth20_token.srf"), config);
+    http_client token_client(U("https://login.live.com/oauth20_token.srf"), config);
 
-        auth.set_token_via_auth_code_grant(U("https://login.live.com/oauth20_authorize.srf"),
-            U("http://localhost:8890/"),
-            token_client,
-            open_browser_callback,
-            U("wl.basic")).wait();
-    }
+    oauth2_client auth = oauth2_client::create_with_auth_code_grant(U("https://login.live.com/oauth20_authorize.srf"),
+        U("http://localhost:8890/"),
+        token_client,
+        open_browser_callback,
+        U("wl.basic")).get();
+
     http_client api(U("https://apis.live.net/v5.0/"));
     api.add_handler(auth.create_pipeline_stage());
 
