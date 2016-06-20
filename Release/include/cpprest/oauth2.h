@@ -311,11 +311,6 @@ private:
     std::shared_ptr<details::oauth2_shared_token> m_impl;
 };
 
-class oauth2_authorization_code_grant
-{
-    
-};
-
 } // namespace web::http::oauth2::experimental
 
 }}}
