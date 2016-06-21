@@ -66,6 +66,8 @@ static const utility::string_t s_linkedin_secret(U(""));
 static const utility::string_t s_live_key(U(""));
 static const utility::string_t s_live_secret(U(""));
 
+static const web::uri s_local_uri(U("http://localhost:8888/"));
+
 //
 // Utility method to open browser on Windows, OS X and Linux systems.
 //
@@ -82,26 +84,76 @@ static void open_browser(utility::string_t auth_uri)
 #endif
 }
 
-void open_browser_callback(const web::uri& auth_uri, pplx::task_completion_event<web::uri>)
+struct
+{
+    void set(const pplx::task_completion_event<web::uri>& tce)
+    {
+        std::lock_guard<std::mutex> lk(m_lock);
+        m_tce = tce;
+    }
+    pplx::task_completion_event<web::uri> get()
+    {
+        std::lock_guard<std::mutex> lk(m_lock);
+        return m_tce;
+    }
+
+private:
+    pplx::task_completion_event<web::uri> m_tce;
+    std::mutex m_lock;
+} s_browser_uri;
+
+struct local_redirect_listener
+{
+    local_redirect_listener()
+        : m_listener(s_local_uri)
+    {
+        m_listener.support([](http_request req)
+        {
+            s_browser_uri.get().set(req.absolute_uri());
+
+            req.reply(status_codes::OK);
+        });
+        m_listener.open().wait();
+    }
+
+    http_listener m_listener;
+};
+
+web::uri open_browser_callback(const web::uri& auth_uri)
 {
     ucout << "Opening browser in URI:" << std::endl;
     ucout << auth_uri.to_string() << std::endl;
 
+    pplx::task_completion_event<web::uri> tce;
+
+    s_browser_uri.set(tce);
     open_browser(auth_uri.to_string());
+
+    return pplx::create_task(tce).get();
 }
 
 void dropbox_session_sample()
 {
+    auto state = nonce_generator::shared_generate();
+
+    auto browser_uri = oauth2_client::build_auth_code_grant_uri(
+        s_dropbox_key,
+        U("https://www.dropbox.com/1/oauth2/authorize"),
+        s_local_uri,
+        state);
+
+    auto redirected = open_browser_callback(browser_uri);
+
     http_client_config config;
     config.set_credentials(web::credentials(s_dropbox_key, s_dropbox_secret));
 
     http_client token_client(U("https://api.dropbox.com/1/oauth2/token"), config);
 
     oauth2_client auth = oauth2_client::create_with_auth_code_grant(
-        U("https://www.dropbox.com/1/oauth2/authorize"),
-        U("http://localhost:8889/"),
+        s_local_uri,
+        redirected,
         token_client,
-        open_browser_callback).get();
+        state).get();
 
     http_client api(U("https://api.dropbox.com/1/"));
     api.add_handler(auth.create_pipeline_stage());
@@ -158,6 +210,8 @@ int main(int argc, char *argv[])
 #endif
 {
     ucout << "Running OAuth 2.0 client sample..." << std::endl;
+    local_redirect_listener listener;
+
     if (!s_linkedin_key.empty())
         linkedin_session_sample();
     if (!s_dropbox_key.empty())

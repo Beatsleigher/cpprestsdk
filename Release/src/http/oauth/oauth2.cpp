@@ -149,8 +149,8 @@ oauth2_token oauth2_client::token() const
 
 namespace
 {
-    web::uri build_authorization_uri(
-        uri_builder user_agent_base_uri,
+    void build_authorization_uri(
+        uri_builder& user_agent_base_uri,
         const utility::string_t& client_id,
         const utility::string_t& redirect_uri,
         const utility::string_t& state_cookie,
@@ -164,7 +164,6 @@ namespace
         {
             user_agent_base_uri.append_query(oauth2_strings::scope, scope);
         }
-        return user_agent_base_uri.to_uri();
     }
 
     oauth2_token parse_token_from_json(const json::value& token_json, const utility::string_t& default_scope)
@@ -239,6 +238,7 @@ namespace
         return result;
     }
 
+#if 0
     pplx::task<web::uri> communicate_with_user_agent(
         const web::uri& user_agent_url,
         const web::uri& local_uri,
@@ -272,6 +272,7 @@ namespace
             return t;
         });
     }
+#endif
 
     void check_state_cookie(const std::map<utility::string_t, utility::string_t>& query_map, const utility::string_t& state_cookie)
     {
@@ -354,91 +355,95 @@ namespace
 
 }
 
+web::uri oauth2_client::build_auth_code_grant_uri(
+    const utility::string_t& client_id,
+    const web::uri_builder& auth_endpoint,
+    const web::uri& base_redirect_uri,
+    const utility::string_t& state_cookie,
+    const utility::string_t& scope)
+{
+    uri_builder user_agent_base_uri(auth_endpoint);
+    user_agent_base_uri.append_query(oauth2_strings::response_type, oauth2_strings::code);
+    build_authorization_uri(user_agent_base_uri, client_id, base_redirect_uri.to_string(), state_cookie, scope);
+    return user_agent_base_uri.to_uri();
+}
+
+web::uri oauth2_client::build_implicit_grant_uri(
+    const utility::string_t& client_id,
+    const web::uri_builder& auth_endpoint,
+    const web::uri& base_redirect_uri,
+    const utility::string_t& state_cookie,
+    const utility::string_t& scope)
+{
+    uri_builder user_agent_base_uri(auth_endpoint);
+    user_agent_base_uri.append_query(oauth2_strings::response_type, oauth2_strings::token);
+    build_authorization_uri(user_agent_base_uri, client_id, base_redirect_uri.to_string(), state_cookie, scope);
+    return user_agent_base_uri.to_uri();
+}
+
 pplx::task<oauth2_client> oauth2_client::create_with_auth_code_grant(
-    const web::uri& auth_endpoint,
-    const web::uri& local_uri,
+    const web::uri& base_redirect_uri,
+    const web::uri& redirected_uri,
     web::http::client::http_client token_client,
-    oauth2_client::launch_user_agent_callback launch_user_agent,
+    const utility::string_t& state_cookie,
     const utility::string_t& scope,
     client_credentials_mode creds_mode)
 {
-    auto state_cookie = utility::nonce_generator::shared_generate();
+    auto query = uri::split_query(redirected_uri.query());
 
-    uri_builder user_agent_base_uri(auth_endpoint);
-    user_agent_base_uri.append_query(oauth2_strings::response_type, oauth2_strings::code);
-    auto user_agent_url = build_authorization_uri(std::move(user_agent_base_uri), token_client.client_config().credentials().username(), local_uri.to_string(), state_cookie, scope);
+    check_state_cookie(query, state_cookie);
 
-    return communicate_with_user_agent(user_agent_url, local_uri, launch_user_agent)
-        .then([state_cookie, scope, local_uri, token_client, creds_mode](const web::uri& redirected_uri) mutable
+    auto code_param = query.find(oauth2_strings::code);
+    if (code_param == query.end())
     {
-        auto query = uri::split_query(redirected_uri.query());
+        throw oauth2_exception("parameter 'code' missing from redirected URI.");
+    }
 
-        check_state_cookie(query, state_cookie);
+    uri_builder request_body_ub;
+    request_body_ub.append_query(oauth2::details::oauth2_strings::grant_type, oauth2::details::oauth2_strings::authorization_code, false);
+    request_body_ub.append_query(oauth2::details::oauth2_strings::code, uri::encode_data_string(code_param->second), false);
+    request_body_ub.append_query(oauth2::details::oauth2_strings::redirect_uri, uri::encode_data_string(base_redirect_uri.to_string()), false);
 
-        auto code_param = query.find(oauth2_strings::code);
-        if (code_param == query.end())
-        {
-            throw oauth2_exception("parameter 'code' missing from redirected URI.");
-        }
-
-        uri_builder request_body_ub;
-        request_body_ub.append_query(oauth2::details::oauth2_strings::grant_type, oauth2::details::oauth2_strings::authorization_code, false);
-        request_body_ub.append_query(oauth2::details::oauth2_strings::code, uri::encode_data_string(code_param->second), false);
-        request_body_ub.append_query(oauth2::details::oauth2_strings::redirect_uri, uri::encode_data_string(local_uri.to_string()), false);
-
-        return create_with_extension_grant(request_body_ub, token_client, scope, creds_mode);
-    });
+    return create_with_extension_grant(request_body_ub, token_client, scope, creds_mode);
 }
 
-pplx::task<oauth2_client> oauth2_client::create_with_implicit_grant(
-    const utility::string_t& client_id,
-    const web::uri& auth_endpoint,
-    const web::uri& local_uri,
-    launch_user_agent_callback launch_user_agent,
+oauth2_client oauth2_client::create_with_implicit_grant(
+    const web::uri& redirected_uri,
+    const utility::string_t& state_cookie,
     const utility::string_t& scope)
 {
-    auto state_cookie = utility::nonce_generator::shared_generate();
+    auto query = uri::split_query(redirected_uri.fragment());
 
-    uri_builder user_agent_base_uri(auth_endpoint);
-    user_agent_base_uri.append_query(oauth2_strings::response_type, oauth2_strings::token);
-    auto user_agent_url = build_authorization_uri(std::move(user_agent_base_uri), client_id, local_uri.to_string(), state_cookie, scope);
+    check_state_cookie(query, state_cookie);
 
-    return communicate_with_user_agent(user_agent_url, local_uri, launch_user_agent)
-        .then([state_cookie, scope](const web::uri& redirected_uri) mutable
+    auto token_param = query.find(oauth2_strings::access_token);
+    if (token_param == query.end())
     {
-        auto query = uri::split_query(redirected_uri.fragment());
+        throw oauth2_exception("parameter 'access_token' missing from redirected URI.");
+    }
 
-        check_state_cookie(query, state_cookie);
+    // Parse token from query
+    oauth2_token tok(token_param->second);
+    auto query_it = query.find(oauth2_strings::scope);
+    if (query_it != query.end())
+        tok.set_scope(query_it->second);
+    else
+        tok.set_scope(scope);
 
-        auto token_param = query.find(oauth2_strings::access_token);
-        if (token_param == query.end())
+    query_it = query.find(oauth2_strings::expires_in);
+    if (query_it != query.end())
+        tok.set_expires_in(utility::details::scan_string<uint64_t>(query_it->second));
+    query_it = query.find(oauth2_strings::token_type);
+    if (query_it != query.end())
+    {
+        if (!utility::details::str_icmp(query_it->second, oauth2_strings::bearer))
         {
-            throw oauth2_exception("parameter 'access_token' missing from redirected URI.");
+            throw oauth2_exception("only 'token_type=bearer' access tokens are currently supported: " + utility::conversions::to_utf8string(query_it->second));
         }
+    }
+    tok.set_token_type(oauth2_strings::bearer);
 
-        // Parse token from query
-        oauth2_token tok(token_param->second);
-        auto query_it = query.find(oauth2_strings::scope);
-        if (query_it != query.end())
-            tok.set_scope(query_it->second);
-        else
-            tok.set_scope(scope);
-
-        query_it = query.find(oauth2_strings::expires_in);
-        if (query_it != query.end())
-            tok.set_expires_in(utility::details::scan_string<uint64_t>(query_it->second));
-        query_it = query.find(oauth2_strings::token_type);
-        if (query_it != query.end())
-        {
-            if (!utility::details::str_icmp(query_it->second, oauth2_strings::bearer))
-            {
-                throw oauth2_exception("only 'token_type=bearer' access tokens are currently supported: " + utility::conversions::to_utf8string(query_it->second));
-            }
-        }
-        tok.set_token_type(oauth2_strings::bearer);
-
-        return oauth2_client(tok);
-    });
+    return oauth2_client(tok);
 }
 
 pplx::task<oauth2_client> oauth2_client::create_with_resource_owner_creds_grant(

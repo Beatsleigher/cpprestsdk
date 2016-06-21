@@ -59,6 +59,12 @@ namespace web
         uri_builder(const utility::string_t& str) : uri_builder(uri(str)) {}
 
         /// <summary>
+        /// Creates a builder with a existing URI string.
+        /// </summary>
+        /// <param name="str">String containing the URI.</param>
+        uri_builder(const utility::char_t* str) : uri_builder(uri(str)) {}
+
+        /// <summary>
         /// Get the scheme component of the URI as an encoded string.
         /// </summary>
         /// <returns>The URI scheme as a string.</returns>

@@ -239,8 +239,6 @@ public:
     /// <param name="tok">Token to set.</param>
     _ASYNCRTIMP void set_token(const oauth2_token& tok);
 
-    using launch_user_agent_callback = std::function<void(const web::uri&, pplx::task_completion_event<web::uri>)>;
-
     /// <summary>
     /// Builds an authorization URI to be loaded in the web browser/view.
     /// </summary>
@@ -259,19 +257,33 @@ public:
     ///   my_oauth2_client.token_from_redirected_uri(redirect_uri, state_cookie).wait();
     /// </code>
     /// </example>
+    static _ASYNCRTIMP web::uri __cdecl build_auth_code_grant_uri(
+        const utility::string_t& client_id,
+        const web::uri_builder& auth_endpoint,
+        const web::uri& base_redirect_uri,
+        const utility::string_t& state_cookie,
+        const utility::string_t& scope = utility::string_t()
+    );
+
+    static _ASYNCRTIMP web::uri __cdecl build_implicit_grant_uri(
+        const utility::string_t& client_id,
+        const web::uri_builder& auth_endpoint,
+        const web::uri& base_redirect_uri,
+        const utility::string_t& state_cookie,
+        const utility::string_t& scope = utility::string_t()
+    );
+
     static _ASYNCRTIMP pplx::task<oauth2_client> __cdecl create_with_auth_code_grant(
-        const web::uri& auth_endpoint,
-        const web::uri& local_listen_uri,
+        const web::uri& base_redirect_uri,
+        const web::uri& redirected_uri,
         web::http::client::http_client token_client,
-        launch_user_agent_callback launch_user_agent,
+        const utility::string_t& state_cookie,
         const utility::string_t& scope = utility::string_t(),
         client_credentials_mode creds_mode = client_credentials_mode::http_basic_auth);
 
-    static _ASYNCRTIMP pplx::task<oauth2_client> __cdecl create_with_implicit_grant(
-        const utility::string_t& client_id,
-        const web::uri& auth_endpoint,
-        const web::uri& local_listen_uri,
-        launch_user_agent_callback launch_user_agent,
+    static _ASYNCRTIMP oauth2_client __cdecl create_with_implicit_grant(
+        const web::uri& redirected_uri,
+        const utility::string_t& state_cookie,
         const utility::string_t& scope = utility::string_t());
 
     static _ASYNCRTIMP pplx::task<oauth2_client> __cdecl create_with_resource_owner_creds_grant(
