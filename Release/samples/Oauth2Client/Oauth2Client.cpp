@@ -134,26 +134,18 @@ web::uri open_browser_callback(const web::uri& auth_uri)
 
 void dropbox_session_sample()
 {
-    auto state = nonce_generator::shared_generate();
-
-    auto browser_uri = oauth2_client::build_auth_code_grant_uri(
+    auto oauth_session = oauth2_shared_token::auth_code_grant_flow(
         s_dropbox_key,
         U("https://www.dropbox.com/1/oauth2/authorize"),
-        s_local_uri,
-        state);
+        s_local_uri);
 
-    auto redirected = open_browser_callback(browser_uri);
+    auto redirected = open_browser_callback(oauth_session.uri());
 
     http_client_config config;
     config.set_credentials(web::credentials(s_dropbox_key, s_dropbox_secret));
-
     http_client token_client(U("https://api.dropbox.com/1/oauth2/token"), config);
 
-    oauth2_client auth = oauth2_client::create_with_auth_code_grant(
-        s_local_uri,
-        redirected,
-        token_client,
-        state).get();
+    oauth2_shared_token auth = oauth_session.complete(redirected, token_client).get();
 
     http_client api(U("https://api.dropbox.com/1/"));
     api.add_handler(auth.create_pipeline_stage());
@@ -169,11 +161,14 @@ void linkedin_session_sample()
 
     http_client token_client(U("https://www.linkedin.com/uas/oauth2/accessToken"), config);
 
-    oauth2_client auth = oauth2_client::create_with_auth_code_grant(U("https://www.linkedin.com/uas/oauth2/authorization"),
-        U("http://localhost:8888/"),
+    auto flow = oauth2_shared_token::auth_code_grant_flow(
+        s_linkedin_key,
+        U("https://www.linkedin.com/uas/oauth2/authorization"),
+        s_local_uri);
+    auto redirected = open_browser_callback(flow.uri());
+    auto auth = flow.complete(
+        redirected,
         token_client,
-        open_browser_callback,
-        utility::string_t(),
         client_credentials_mode::request_body).get();
 
     http_client api(U("https://api.linkedin.com/v1/people/"));
@@ -190,11 +185,15 @@ void live_session_sample()
 
     http_client token_client(U("https://login.live.com/oauth20_token.srf"), config);
 
-    oauth2_client auth = oauth2_client::create_with_auth_code_grant(U("https://login.live.com/oauth20_authorize.srf"),
-        U("http://localhost:8890/"),
-        token_client,
-        open_browser_callback,
-        U("wl.basic")).get();
+    auto flow = oauth2_shared_token::auth_code_grant_flow(
+        s_live_key,
+        U("https://login.live.com/oauth20_authorize.srf"),
+        s_local_uri,
+        U("wl.basic"));
+    auto redirected = open_browser_callback(flow.uri());
+    auto auth = flow.complete(
+        redirected,
+        token_client).get();
 
     http_client api(U("https://apis.live.net/v5.0/"));
     api.add_handler(auth.create_pipeline_stage());
