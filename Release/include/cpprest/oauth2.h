@@ -157,7 +157,7 @@ class grant_flow;
 /// </remarks>
 enum class client_credentials_mode
 {
-    /// <summary>Use HTTP Basic Auth</summary>
+    /// <summary>Add the client credentials using HTTP Basic Auth</summary>
     http_basic_auth,
     /// <summary>Add the client credentials to the request body as client_id=AAA&client_secret=BBB</summary>
     request_body,
@@ -169,7 +169,12 @@ enum class client_credentials_mode
 /// A thread-safe OAuth2 token with `std::shared_ptr` semantics.
 /// </summary>
 /// <remarks>
-///   For integration as an http pipeline stage, see <see cref="create_pipeline_stage"/>.
+///   To create a new token, see the flow factories:
+///   * <see cref="auth_code_grant_flow" />
+///   * <see cref="implicit_grant_flow" />
+///   * <see cref="resource_owner_creds_grant_flow" />
+///   * <see cref="extension_grant_flow" />
+///   For integration as an <see cref="http_pipeline_stage"/>, see <see cref="create_pipeline_stage"/>.
 /// </remarks>
 class oauth2_shared_token
 {
@@ -177,13 +182,6 @@ public:
     /// <summary>
     ///   Allocates a new <see cref="oauth2_token"/> with `std::shared_ptr` semantics.
     /// </summary>
-    /// <remarks>
-    ///   This constructor is unlikely to be correct for user code. See instead the flow factories:
-    ///   * <see cref="auth_code_grant_flow" />
-    ///   * <see cref="implicit_grant_flow" />
-    ///   * <see cref="resource_owner_creds_grant_flow" />
-    ///   * <see cref="extension_grant_flow" />
-    /// </remarks>
     /// <param name="token">
     ///   Value to initialize internal <see cref="oauth2_token"/> with. Optional.
     /// </param>
@@ -201,7 +199,7 @@ public:
     _ASYNCRTIMP void set_token(const oauth2_token& tok);
 
     /// <summary>
-    ///   See <see cref="extension_grant_flow"/>
+    ///   Sets the internal shared token according to the Extension Grant Flow. See <see cref="extension_grant_flow"/>.
     /// </summary>
     _ASYNCRTIMP pplx::task<void> set_token_via_extension_grant(
         web::uri_builder request_body,
