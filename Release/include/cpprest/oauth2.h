@@ -39,9 +39,11 @@ namespace http
 
 class http_pipeline_stage;
 
+/// <summary>
 /// APIs to enable OAuth 2.0 integration.
 /// See <see cref="oauth2_shared_token"/> for the primary entry points.
 /// See the OAuth2Client sample for an example of these APIs in practice.
+/// </summary>
 namespace oauth2
 {
 namespace details
@@ -164,43 +166,16 @@ enum class client_credentials_mode
 };
 
 /// <summary>
-/// A thread-safe OAuth2 token with <see cref="std::shared_ptr"/> semantics.
+/// A thread-safe OAuth2 token with `std::shared_ptr` semantics.
 /// </summary>
 /// <remarks>
-/// Performing OAuth 2.0 authorization:
-/// 1. Set service and client/app parameters:
-/// -  Client/app key & secret (as provided by the service).
-/// -  The service authorization endpoint and token endpoint.
-/// -  Your client/app redirect URI.
-/// -  Use set_state() to assign a unique state string for the authorization
-///    session (default: "").
-/// -  If needed, use set_bearer_auth() to control bearer token passing in either
-///    query or header (default: header). See: http://tools.ietf.org/html/rfc6750#section-2
-/// -  If needed, use set_access_token_key() to set "non-standard" access token
-///    key (default: "access_token").
-/// -  If needed, use set_implicit_grant() to enable implicit grant flow.
-/// 2. Build authorization URI with build_authorization_uri() and open this in web browser/control.
-/// 3. The resource owner should then clicks "Yes" to authorize your client/app, and
-///    as a result the web browser/control is redirected to redirect_uri().
-/// 5. Capture the redirected URI either in web control or by HTTP listener.
-/// 6. Pass the redirected URI to token_from_redirected_uri() to obtain access token.
-/// -  The method ensures redirected URI contains same state() as set in step 1.
-/// -  In implicit_grant() is false, this will create HTTP request to fetch access token
-///    from the service. Otherwise access token is already included in the redirected URI.
-///
-/// Usage for issuing authenticated requests:
-/// 1. Perform authorization as above to obtain the access token or use an existing token.
-/// -  Some services provide option to generate access tokens for testing purposes.
-/// 2. Pass the resulting oauth2_shared_token_config with the access token to http_client_config::set_oauth2().
-/// 3. Construct http_client with this http_client_config. As a result, all HTTP requests
-///    by that client will be OAuth 2.0 authenticated.
-///
-/// </summary>
+///   For integration as an http pipeline stage, see <see cref="create_pipeline_stage"/>.
+/// </remarks>
 class oauth2_shared_token
 {
 public:
     /// <summary>
-    ///   Allocates a new <see cref="oauth2_token"/> with <see cref="std::shared_ptr"/> semantics.
+    ///   Allocates a new <see cref="oauth2_token"/> with `std::shared_ptr` semantics.
     /// </summary>
     /// <remarks>
     ///   This constructor is unlikely to be correct for user code. See instead the flow factories:
