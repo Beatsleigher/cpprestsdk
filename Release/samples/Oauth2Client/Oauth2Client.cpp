@@ -51,7 +51,7 @@ using namespace utility;
 using namespace web;
 using namespace web::http;
 using namespace web::http::client;
-using namespace web::http::oauth2::experimental;
+using namespace web::http::oauth2;
 using namespace web::http::experimental::listener;
 
 //
@@ -134,7 +134,7 @@ web::uri open_browser_callback(const web::uri& auth_uri)
 
 void dropbox_session_sample()
 {
-    auto oauth_session = oauth2_shared_token::auth_code_grant_flow(
+    auto oauth_session = auth_code_grant_flow(
         s_dropbox_key,
         U("https://www.dropbox.com/1/oauth2/authorize"),
         s_local_uri);
@@ -161,7 +161,7 @@ void linkedin_session_sample()
 
     http_client token_client(U("https://www.linkedin.com/uas/oauth2/accessToken"), config);
 
-    auto flow = oauth2_shared_token::auth_code_grant_flow(
+    auto flow = auth_code_grant_flow(
         s_linkedin_key,
         U("https://www.linkedin.com/uas/oauth2/authorization"),
         s_local_uri);
@@ -172,7 +172,7 @@ void linkedin_session_sample()
         client_credentials_mode::request_body).get();
 
     http_client api(U("https://api.linkedin.com/v1/people/"));
-    api.add_handler(auth.create_pipeline_stage(authenticated_request_mode::uri_query_parameter, U("oauth2_access_token")));
+    api.add_handler(auth.create_pipeline_stage(U("oauth2_access_token")));
 
     ucout << "Requesting account information:" << std::endl;
     ucout << "Information: " << api.request(methods::GET, U("~?format=json")).get().extract_json().get() << std::endl;
@@ -185,7 +185,7 @@ void live_session_sample()
 
     http_client token_client(U("https://login.live.com/oauth20_token.srf"), config);
 
-    auto flow = oauth2_shared_token::auth_code_grant_flow(
+    auto flow = auth_code_grant_flow(
         s_live_key,
         U("https://login.live.com/oauth20_authorize.srf"),
         s_local_uri,
